@@ -26,7 +26,11 @@ from dino_vit_features.extractor import ViTExtractor
 from my_utils.myImageSaver import MyImageSaver
 from my_utils.pose_util import *
 from my_utils.myRobotSaver import MyRobotSaver,replay_movement,read_movement
-from my_utils.depthUtils import abnormal_process
+from my_utils.depthUtils import project_to_3d
+from key_point import extract_keypoints,find_checkpoint
+from my_utils.ransac import ransac
+from light_glue_points import find_glue_points,select_object
+
 
 sys.path.append('/home/hanglok/work/ur_slam')
 from ik_step import init_robot
@@ -48,7 +52,7 @@ ERR_THRESHOLD = 0.02 #A generic error between the two sets of points
 
 
 #Here are the functions you need to create based on your setup.
-def camera_get_rgbd(imagesaver,output="folder_name"):
+def camera_get_rgbd(imagesaver):
     '''
     args:
         imagesaver: class of MyImageSaver
@@ -64,52 +68,6 @@ def camera_get_rgbd(imagesaver,output="folder_name"):
     else:
         raise ValueError("No image received from the camera")
 
-    
-
-
-def project_to_3d(points, depth, intrinsics, show=True):
-    print('depth shape:',depth.shape)
-    depth = cv2.resize(depth, (320,240))
-    if show:
-        plt.imshow(depth)
-    
-    points_3d = list()
-    for y,x in points:
-        x = math.floor(x) 
-        y = math.floor(y)
-        d = depth[y][x]        
-        # Plot points (x, y) on the image
-        if show:
-            if d>0:
-                plt.scatter(x, y, color='blue', s=10)  # Adjust the size (s) as needed
-            else:
-                plt.scatter(x, y, color='red', s=10)
-        # z = d / depth_scale
-        # x = (u - cx) * z / fx
-        # y = (v - cy) * z / fy
-        # 3d point in meter
-        z = d / 1000
-        fx, fy, cx, cy = intrinsics  # Assuming intrinsics is [fx, fy, cx, cy]
-        
-        # Calculate 3D coordinates
-        x = (x - cx) * z / fx
-        y = (y - cy) * z / fy
-        
-        if show:
-            print(f'x:{x} \t y:{y} \t z:{z}')
-        points_3d.append((x,y,z)) #in ee frame in this case ee frame is the same
-
-        if x+y+z ==0:
-            print("x y z are 0")
-            print("z is",z)
-            print("depth is",depth)
-            input("check project to 3d class")
-        
-    if show:
-        plt.axis('off')  # Turn off axis labels
-        plt.show()
-    
-    return points_3d
     
 def robot_move(robot,t_meters,R):
     """
@@ -127,7 +85,9 @@ def robot_move(robot,t_meters,R):
     SE3_pose = pose_to_SE3(pose)
     SE3_pose = transformations * SE3_pose * transformations.inv()
  
-    robot.step_in_ee(action=SE3_pose,wait=True)
+    return robot.step_in_ee(action=SE3_pose,wait=True,return_on_exceed = True)
+
+
 
 def record_demo(robot,robot_name,filename):
     recorder = MyRobotSaver(robot,robot_name, filename, init_node=False)
@@ -198,7 +158,21 @@ def find_transformation(X, Y):
 def compute_error(points1, points2):
     return np.linalg.norm(np.array(points1) - np.array(points2))
 
+def compute_rgb_error(match_point1, match_point2):
+    # Ensure both match_point1 and match_point2 are converted to numpy arrays
+    if isinstance(match_point1, torch.Tensor):
+        match_point1 = match_point1.cpu().numpy()
+    elif isinstance(match_point1, list):
+        match_point1 = np.array([p.cpu().numpy() if isinstance(p, torch.Tensor) else p for p in match_point1])
 
+    if isinstance(match_point2, torch.Tensor):
+        match_point2 = match_point2.cpu().numpy()
+    elif isinstance(match_point2, list):
+        match_point2 = np.array([p.cpu().numpy() if isinstance(p, torch.Tensor) else p for p in match_point2])
+    
+    # Calculate the error as the Euclidean distance
+    error = np.linalg.norm(match_point1 - match_point2)
+    return error/len(match_point1)
 
 def filter_points(points1, points2):
     '''
@@ -216,7 +190,7 @@ def filter_points(points1, points2):
 
 
 
-def main(robot,imagesaver,intrinsics):
+def robot_move_version(robot,imagesaver,intrinsics):
 
     #free cuda cache
     torch.cuda.empty_cache()
@@ -297,15 +271,116 @@ def main(robot,imagesaver,intrinsics):
 
 
 
+
+def object_move_version(robot,imagesaver,intrinsics):
+    '''
+    let robot to track moving object 
+    '''
+    # move robot to the initial pose
+
+
+    T_overall = np.eye(4)
+
+
+    torch.cuda.empty_cache()
+    rgb_bn, depth_bn = camera_get_rgbd(imagesaver)
+    input("Press Enter to continue...")
+    masks = select_object(rgb_bn)
+    
+    error = 100000
+    while error > ERR_THRESHOLD:
+        #Collect observations at the current pose.
+        rgb_live, depth_live = camera_get_rgbd(imagesaver)
+
+        count = 0
+        point_clouds1 = []
+        point_clouds2 = []
+        match_point_overall_1 = []
+        match_point_overall_2 = []
+        while count<5:
+            #Compute pixel correspondences between new observation and bottleneck observation.
+            match_point1,match_point2 = find_glue_points(rgb_bn, rgb_live,masks)
+            match_point_overall_1 += match_point1
+            match_point_overall_2 += match_point2
+            #Given the pixel coordinates of the correspondences, and their depth values,
+            #project the points to 3D space
+            point_clouds1 += project_to_3d(match_point1, depth_bn, intrinsics,show=False,resize=True ,sequence="xy").copy()
+            point_clouds2 += project_to_3d(match_point2,depth_live,intrinsics,show=False,resize=True ,sequence="xy" ).copy()
+            count += 1
+        origin_points, new_points = filter_points(point_clouds1, point_clouds2)
+
+        # filter outliers
+        inliner_mask1 = ransac(origin_points)
+        inliner_mask2 = ransac(new_points)
+        overall_mask = inliner_mask1 & inliner_mask2
+        origin_points = np.array(origin_points)
+        new_points = np.array(new_points)
+        origin_points = origin_points[overall_mask]
+        new_points = new_points[overall_mask]
+
+
+
+
+        # only deal with new points T_overall * new_points = new_points
+        for i in range(len(new_points)):
+            new_points[i] = np.dot(T_overall[:3,:3],new_points[i]) + T_overall[:3,3]
+
+
+        #Find rigid translation and rotation that aligns the points by minimising error, using SVD.
+        R, t = find_transformation(origin_points, new_points)
+        print("moving R: ",R)
+        print("moving t: ",t)
+   
+        error = compute_rgb_error(match_point_overall_1, match_point_overall_2)
+        print("Error: ", error)
+
+        T_move =np.linalg.inv(T_overall)  @ np.array(pose_to_SE3(Rt_to_pose(R,t))) 
+        R = T_move[:3,:3]
+        t = T_move[:3,3]
+
+
+        if error < 20:
+            break
+        #Move robot
+
+        will_move = robot_move(robot,t,R)
+        if will_move:
+            T_overall = np.array(pose_to_SE3(Rt_to_pose(R,t)))
+        else:
+            print("not moving")
+
+        # print("origin_points: ", origin_points)
+        # print("new_points: ", new_points)
+        torch.cuda.empty_cache()
+        # input("Press Enter to continue...")
+
+
+
+
 if __name__ == "__main__":
+    #object move
     rospy.init_node('dino_bot')
     robot = init_robot("robot1",rotate=False)
-    gripper = myGripper.MyGripper()
-    imagesaver = MyImageSaver(cameraNS="camera1")
+    imagesaver = MyImageSaver(cameraNS="camera1")#     imagesaver = MyImageSaver(cameraNS="camera1")
     intrinsics = [ 912.2659912109375, 911.6720581054688, 637.773193359375, 375.817138671875]
-    main(robot,imagesaver,intrinsics)
-    robot = init_robot("robot1")
-    replay2(robot,gripper)
+    object_move_version(robot,imagesaver,intrinsics)
+
+
+
+
+
+
+
+
+# if __name__ == "__main__":
+#     rospy.init_node('dino_bot')
+#     robot = init_robot("robot1",rotate=False)
+#     gripper = myGripper.MyGripper()
+#     imagesaver = MyImageSaver(cameraNS="camera1")
+#     intrinsics = [ 912.2659912109375, 911.6720581054688, 637.773193359375, 375.817138671875]
+#     robot_move_version(robot,imagesaver,intrinsics)
+#     robot = init_robot("robot1")
+#     replay2(robot,gripper)
 
 
 

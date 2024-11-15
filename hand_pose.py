@@ -18,7 +18,7 @@ intrinsics = [ 912.2659912109375, 911.6720581054688, 637.773193359375, 375.81713
 
 if __name__ == "__main__":
     rospy.init_node('hand_pose')
-    image_saver = MyImageSaver(cameraNS='camera3')
+    image_saver = MyImageSaver(cameraNS='camera1')
     rospy.sleep(1)
     framedelay = 1000 // 20
 

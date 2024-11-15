@@ -241,9 +241,6 @@ def rpy_to_se3(roll, pitch, yaw):
     """
     # Create rotation matrices for roll, pitch, and yaw
 
-
-
-
     roll = 0
 
     pitch = 0

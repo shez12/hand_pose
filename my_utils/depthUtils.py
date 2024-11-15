@@ -107,13 +107,31 @@ def abnormal_process(depth_image):
 
 
 
-
-def project_to_3d(points, depth, intrinsics, show=False):
+def project_to_3d(points, depth, intrinsics, show=True,resize = True,sequence = "yx"):
+    '''
+    args:
+        points: list of tuples of pixel coordinates
+        depth: depth image
+        intrinsics: list of camera intrinsics
+        show: bool, whether to show the image with the points plotted
+        resize: bool, whether to resize the depth image
+        sequence: string, the sequence of the pixel coordinates, either "yx" or "xy"
+    return:
+        points_3d: list of tuples of 3D coordinates
+    
+    '''
+    if resize:
+        depth = cv2.resize(depth, (320,240)) #??
     if show:
         plt.imshow(depth)
     
     points_3d = list()
-    for y,x in points:
+    for x,y in points:
+        if sequence == "yx":
+            x,y = y,x
+        elif sequence == "xy":
+            x,y = x,y
+
         x = math.floor(x) 
         y = math.floor(y)
         d = depth[y][x]        
@@ -149,4 +167,3 @@ def project_to_3d(points, depth, intrinsics, show=False):
         plt.show()
     
     return points_3d
-
