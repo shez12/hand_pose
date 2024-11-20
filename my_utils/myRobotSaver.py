@@ -110,7 +110,7 @@ def read_movement(file_path):
 
 def replay_movement(robot, positions, velocities,transformations, move_to_start=False):
     '''
-    Replay the movement, NOT focus on position but velocity and time.
+    Replay the movement
     '''
     if move_to_start:
         robot.move_joints(positions[0], duration=0.5, wait=True)
@@ -119,7 +119,7 @@ def replay_movement(robot, positions, velocities,transformations, move_to_start=
     for i in range(len(transformations)-1):
         rospy.loginfo(f"Replaying relative movement ....")
         move_transformation = pose_to_SE3(transformations[i]).inv() @ pose_to_SE3(transformations[i+1])
-        robot.step(action=move_transformation,wait=False)
+        robot.step(action=move_transformation,wait=True)
 
 
         

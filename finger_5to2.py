@@ -4,7 +4,6 @@ import numpy as np
 import sys
 import rospy
 
-from my_utils.handPoseUtil import *
 from my_utils.pose_util import *
 from gesture import detect_all_finger_state, judge_data, get_gripper_coordinates
 sys.path.append('/home/hanglok/work/ur_slam')
@@ -32,12 +31,17 @@ def read_npy_and_separate(file_path):
 
 
 def check_finger_pose(file_path):
+    '''
+    return: 
+    dataset: list of 3d coordinates of the tip of the fingers 
+    
+    '''
 
     # 使用numpy的load函数读取.npy文件
     data = read_npy_and_separate(file_path)
     # print(data[0])
 
-    h,w=480,848
+    h,w=480,640
     
     print(len(data[0]))
 
@@ -71,7 +75,7 @@ def check_finger_pose(file_path):
 
 
 if __name__ == "__main__":
-    file_path=r'hand_pose/landmarks1730710777.5934556.npy'
+    file_path=r'hand_pose/landmarks1731660209.389856.npy'
     dataset = check_finger_pose(file_path)
     rospy.init_node('dino_bot')
     robot = init_robot("robot1")
@@ -98,6 +102,6 @@ if __name__ == "__main__":
         r,p,y = se3_to_rpy(SE3_pose)
         SE3_pose = rpy_to_se3(r,p,y)
 
-        robot.step(action= SE3_pose,wait=True)
+        robot.step_ee(action= SE3_pose,wait=True)
     
     gripper.set_gripper(1000,5)

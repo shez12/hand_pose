@@ -34,6 +34,7 @@ from light_glue_points import find_glue_points,select_object
 
 sys.path.append('/home/hanglok/work/ur_slam')
 from ik_step import init_robot
+import ros_utils.myGripper
 
 
 
@@ -46,6 +47,8 @@ bin=True
 thresh=0.05 
 model_type='dino_vits8' 
 stride=4 
+best_joints = [-0.432199780141012, -0.6554244200335901, 1.9931893348693848, -2.4746230284320276, 2.2496132850646973, -2.539410654698507]
+intrinsics = [ 912.2659912109375, 911.6720581054688, 637.773193359375, 375.817138671875]
 
 #Deployment hyperparameters    
 ERR_THRESHOLD = 0.02 #A generic error between the two sets of points
@@ -169,10 +172,14 @@ def compute_rgb_error(match_point1, match_point2):
         match_point2 = match_point2.cpu().numpy()
     elif isinstance(match_point2, list):
         match_point2 = np.array([p.cpu().numpy() if isinstance(p, torch.Tensor) else p for p in match_point2])
+
+
     
-    # Calculate the error as the Euclidean distance
-    error = np.linalg.norm(match_point1 - match_point2)
-    return error/len(match_point1)
+    # Calculate the error as the max Euclidean distance
+    error_list = []
+    for i in range(len(match_point1)):
+        error_list.append(np.linalg.norm(match_point1[i] - match_point2[i]))
+    return max(error_list)
 
 def filter_points(points1, points2):
     '''
@@ -199,9 +206,6 @@ def robot_move_version(robot,imagesaver,intrinsics):
     #Get rgbd from wrist camera.
     rgb_bn, depth_bn = camera_get_rgbd(imagesaver)
 
-    #save depth in npy file
-    np.save('depth_bn.npy',depth_bn)
-    
     print("current pose: ", pose_to_SE3(robot.get_pose()))
 
     #Record demonstration.
@@ -272,26 +276,35 @@ def robot_move_version(robot,imagesaver,intrinsics):
 
 
 
+
+
 def object_move_version(robot,imagesaver,intrinsics):
     '''
     let robot to track moving object 
     '''
     # move robot to the initial pose
-
-
-    T_overall = np.eye(4)
-
-
+    # 初始化窗口
     torch.cuda.empty_cache()
     rgb_bn, depth_bn = camera_get_rgbd(imagesaver)
+    # save current joints
+    init_joints =  robot.get_joints()
+
+    #Record demonstration.
+    record_demo(robot,robot_name='robot1',filename='robot1_movements.json')
+
+    robot.move_joints(init_joints, duration = 0.5, wait=True)
+
     input("Press Enter to continue...")
+    # move to the initial pose
+
+
     masks = select_object(rgb_bn)
     
     error = 100000
     while error > ERR_THRESHOLD:
+        # move to best obersevation position
         #Collect observations at the current pose.
         rgb_live, depth_live = camera_get_rgbd(imagesaver)
-
         count = 0
         point_clouds1 = []
         point_clouds2 = []
@@ -320,39 +333,32 @@ def object_move_version(robot,imagesaver,intrinsics):
 
 
 
-
-        # only deal with new points T_overall * new_points = new_points
-        for i in range(len(new_points)):
-            new_points[i] = np.dot(T_overall[:3,:3],new_points[i]) + T_overall[:3,3]
-
-
         #Find rigid translation and rotation that aligns the points by minimising error, using SVD.
-        R, t = find_transformation(origin_points, new_points)
+        R, t = find_transformation(origin_points,new_points)
         print("moving R: ",R)
         print("moving t: ",t)
    
         error = compute_rgb_error(match_point_overall_1, match_point_overall_2)
         print("Error: ", error)
 
-        T_move =np.linalg.inv(T_overall)  @ np.array(pose_to_SE3(Rt_to_pose(R,t))) 
-        R = T_move[:3,:3]
-        t = T_move[:3,3]
-
-
         if error < 20:
             break
         #Move robot
-
         will_move = robot_move(robot,t,R)
-        if will_move:
-            T_overall = np.array(pose_to_SE3(Rt_to_pose(R,t)))
-        else:
-            print("not moving")
 
         # print("origin_points: ", origin_points)
         # print("new_points: ", new_points)
         torch.cuda.empty_cache()
         # input("Press Enter to continue...")
+    #Once error is small enough, replay demo.
+    replay_demo(robot,'records/robot1_movements.json')
+    # ADD GRIPPER CONTROL....
+    gripper.set_gripper(700,5)
+    input("Press Enter to continue...")
+    robot.move_joints(init_joints, duration = 0.5, wait=True)
+    replay_demo(robot,'records/robot1_movements.json')
+    gripper.set_gripper(1000,5)
+    
 
 
 
@@ -360,10 +366,12 @@ def object_move_version(robot,imagesaver,intrinsics):
 if __name__ == "__main__":
     #object move
     rospy.init_node('dino_bot')
+    gripper = ros_utils.myGripper.MyGripper()
     robot = init_robot("robot1",rotate=False)
     imagesaver = MyImageSaver(cameraNS="camera1")#     imagesaver = MyImageSaver(cameraNS="camera1")
-    intrinsics = [ 912.2659912109375, 911.6720581054688, 637.773193359375, 375.817138671875]
+
     object_move_version(robot,imagesaver,intrinsics)
+
 
 
 

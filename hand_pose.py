@@ -9,7 +9,10 @@ import time
 
 sys.path.append('/home/hanglok/work/ur_slam')
 from ros_utils.myImageSaver import MyImageSaver
-from my_utils.depthUtils import project_to_3d,abnormal_process,interp_data,col_row_process
+from my_utils.depthUtils import project_to_3d
+
+sys.path.append("/home/hanglok/work/Depth-Anything-V2")
+from depth_anything import depth_anything, model_init
 
 # import csv
 intrinsics = [ 912.2659912109375, 911.6720581054688, 637.773193359375, 375.817138671875]
@@ -21,7 +24,7 @@ if __name__ == "__main__":
     image_saver = MyImageSaver(cameraNS='camera1')
     rospy.sleep(1)
     framedelay = 1000 // 20
-
+    model = model_init()
     goal_frame = None
     src_pts = None
     # Initialize MediaPipe Hands
@@ -33,8 +36,7 @@ if __name__ == "__main__":
     while not rospy.is_shutdown():
         frame = image_saver.rgb_image
         show_frame = frame.copy()  # In case of frame is ruined by painting frame
-        depth = image_saver.depth_image
-        # depth,_ = abnormal_process(depth)
+        depth = depth_anything(frame,model)
 
         # Convert the BGR image to RGB for MediaPipe
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -58,9 +60,8 @@ if __name__ == "__main__":
                     y = int(round(landmark.y * frame_rgb.shape[0]))
                     #find depth value
                     points.append([y,x])
-
             #calculated 3d points
-            points_3d = project_to_3d(points=points, depth=depth, intrinsics=intrinsics, show=True)
+            points_3d = project_to_3d(points=points, depth=depth, intrinsics=intrinsics, show=False,resize=False,sequence="yx")
             save_points.append(np.array(points_3d))
             print("3d point", points_3d)
             print("////////////////////////////////")
@@ -90,3 +91,4 @@ if __name__ == "__main__":
     if save_points:
         save_points = np.concatenate(save_points, axis=0)  # Concatenate all frames into a single array
         np.save(filename, save_points)  # Save to a single .npy file
+        print(f"Landmarks saved to {filename}")
